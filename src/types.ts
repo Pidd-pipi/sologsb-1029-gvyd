@@ -63,16 +63,29 @@ export interface LessonProgress {
   updatedAt: string;
 }
 
+export interface StudentProfile {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
 export interface PersistedState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   courses: Course[];
-  attempts: PracticeAttempt[];
-  progress: Record<string, LessonProgress>;
-  activeLessonId: string;
-  activeSentenceId: string;
+  students: StudentProfile[];
+  activeStudentId: string;
+  attemptsByStudent: Record<string, PracticeAttempt[]>;
+  progressByStudent: Record<string, Record<string, LessonProgress>>;
+  activeLessonByStudent: Record<string, string>;
+  activeSentenceByStudent: Record<string, string>;
   theme: ThemeMode;
   fontScale: number;
   role: 'learner' | 'teacher';
+}
+
+export interface StudentAttemptEntry {
+  student: StudentProfile;
+  attempt: PracticeAttempt;
 }
 
 export interface TextSegment {
