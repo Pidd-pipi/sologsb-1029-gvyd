@@ -1,5 +1,8 @@
 import type { Course, PersistedState } from './types';
 
+export const DEFAULT_STUDENT_ID = 'student-default';
+export const DEFAULT_STUDENT_NAME = '默认学生';
+
 export const demoCourses: Course[] = [
   {
     id: 'daily-life',
@@ -65,11 +68,17 @@ export const demoCourses: Course[] = [
 ];
 
 export const createInitialState = (): PersistedState => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   courses: structuredClone(demoCourses),
+  students: [
+    { id: DEFAULT_STUDENT_ID, name: DEFAULT_STUDENT_NAME, createdAt: '2026-09-24T09:00:00.000Z' }
+  ],
+  // 首次打开时为空，应用会先弹出姓名填写，再切换到新档案。
+  activeStudentId: '',
   attempts: [
     {
       id: 'demo-attempt-1',
+      studentId: DEFAULT_STUDENT_ID,
       lessonId: 'airport-01',
       lessonTitle: '办理值机',
       courseTitle: '日常英语 · 机场与出行',
@@ -99,15 +108,19 @@ export const createInitialState = (): PersistedState => ({
       ]
     }
   ],
-  progress: {
-    'airport-01': {
-      answers: { 'airport-01-s1': 'I would like to check in for my flight to London' },
-      activeSentenceId: 'airport-01-s2',
-      updatedAt: '2026-09-24T10:10:00.000Z'
+  studentState: {
+    [DEFAULT_STUDENT_ID]: {
+      progress: {
+        'airport-01': {
+          answers: { 'airport-01-s1': 'I would like to check in for my flight to London' },
+          activeSentenceId: 'airport-01-s2',
+          updatedAt: '2026-09-24T10:10:00.000Z'
+        }
+      },
+      activeLessonId: '',
+      activeSentenceId: ''
     }
   },
-  activeLessonId: '',
-  activeSentenceId: '',
   theme: 'light',
   fontScale: 1,
   role: 'learner'

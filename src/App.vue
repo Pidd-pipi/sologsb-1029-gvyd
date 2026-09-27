@@ -1,28 +1,35 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { courseForLesson, exportRecords, lessonById, persist, saveAttempt, setDownloaded, state, updateTokenClassification } from './store';
-import type { ErrorCategory, Lesson, PracticeAttempt, PracticeView } from './types';
+import { activeStudent, attemptsOf, courseForLesson, createStudent, exportRecords, lessonById, persist, saveAttempt, setDownloaded, state, switchStudent, updateTokenClassification } from './store';
+import type { ErrorCategory, Lesson, PracticeAttempt, PracticeView, StudentLearningState } from './types';
 import { compareSentence, scoreAttempt, segmentText } from './utils';
 
-const view = ref<PracticeView>(state.activeLessonId ? 'practice' : 'library');
+const EMPTY_LEARNING: StudentLearningState = { progress: {}, activeLessonId: '', activeSentenceId: '' };
+const learning = computed<StudentLearningState>(() => (state.activeStudentId && state.studentState[state.activeStudentId]) || EMPTY_LEARNING);
+
+const view = ref<PracticeView>(learning.value.activeLessonId ? 'practice' : 'library');
 const online = ref(navigator.onLine);
 const toast = ref('');
 const resultAttemptId = ref('');
 const selectedResultSentence = ref(0);
 const segmentStart = ref(0);
 const segmentEnd = ref(1);
+const teacherStudentFilter = ref('all');
 const teacherAttemptId = ref(state.attempts[0]?.id ?? '');
 const teacherDraft = ref(state.attempts[0]?.teacherFeedback ?? '');
+const profileDialog = ref<'setup' | 'add' | null>(state.activeStudentId ? null : 'setup');
+const profileName = ref('');
 let toastTimer = 0;
 
-const activeLesson = computed(() => lessonById(state.activeLessonId));
+const currentStudent = computed(() => activeStudent());
+const activeLesson = computed(() => lessonById(learning.value.activeLessonId));
 const activeCourse = computed(() => activeLesson.value ? courseForLesson(activeLesson.value.id) : undefined);
 const currentSentence = computed(() => {
   const lesson = activeLesson.value;
   if (!lesson) return undefined;
-  return lesson.sentences.find((sentence) => sentence.id === state.activeSentenceId) ?? lesson.sentences[0];
+  return lesson.sentences.find((sentence) => sentence.id === learning.value.activeSentenceId) ?? lesson.sentences[0];
 });
-const activeProgress = computed(() => activeLesson.value ? state.progress[activeLesson.value.id] : undefined);
+const activeProgress = computed(() => activeLesson.value ? learning.value.progress[activeLesson.value.id] : undefined);
 const currentAnswer = ref('');
 const currentIndex = computed(() => {
   if (!activeLesson.value || !currentSentence.value) return 0;
@@ -33,11 +40,15 @@ const lessonCompletion = computed(() => {
   const answered = activeLesson.value.sentences.filter((sentence) => (activeProgress.value?.answers[sentence.id] ?? '').trim()).length;
   return Math.round((answered / activeLesson.value.sentences.length) * 100);
 });
+const studentAttempts = computed(() => attemptsOf(state.activeStudentId));
 const resultAttempt = computed(() => state.attempts.find((attempt) => attempt.id === resultAttemptId.value));
 const resultSentence = computed(() => resultAttempt.value?.sentenceAttempts[selectedResultSentence.value]);
 const teacherAttempt = computed(() => state.attempts.find((attempt) => attempt.id === teacherAttemptId.value));
-const totalWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).length);
-const correctedWords = computed(() => state.attempts.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).filter((token) => !token.correct && token.category !== 'unclassified').length);
+const filteredTeacherAttempts = computed(() => teacherStudentFilter.value === 'all'
+  ? state.attempts
+  : state.attempts.filter((attempt) => attempt.studentId === teacherStudentFilter.value));
+const totalWords = computed(() => studentAttempts.value.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).length);
+const correctedWords = computed(() => studentAttempts.value.flatMap((attempt) => attempt.sentenceAttempts).flatMap((item) => item.tokens).filter((token) => !token.correct && token.category !== 'unclassified').length);
 
 const categoryOptions: Array<{ value: ErrorCategory; label: string }> = [
   { value: 'unclassified', label: '未分类' },
@@ -48,6 +59,8 @@ const categoryOptions: Array<{ value: ErrorCategory; label: string }> = [
   { value: 'grammar', label: '语法' }
 ];
 
+const studentName = (id: string) => state.students.find((student) => student.id === id)?.name ?? '未知学生';
+
 watch(currentSentence, (sentence) => {
   currentAnswer.value = sentence && activeProgress.value ? activeProgress.value.answers[sentence.id] ?? '' : '';
   segmentStart.value = 0;
@@ -57,27 +70,36 @@ watch(currentSentence, (sentence) => {
 watch(currentAnswer, (value) => {
   const lesson = activeLesson.value;
   const sentence = currentSentence.value;
-  if (!lesson || !sentence) return;
-  const progress = state.progress[lesson.id] ?? { answers: {}, activeSentenceId: sentence.id, updatedAt: new Date().toISOString() };
+  if (!lesson || !sentence || !state.activeStudentId) return;
+  const current = learning.value;
+  const progress = current.progress[lesson.id] ?? { answers: {}, activeSentenceId: sentence.id, updatedAt: new Date().toISOString() };
   progress.answers[sentence.id] = value;
   progress.activeSentenceId = sentence.id;
   progress.updatedAt = new Date().toISOString();
-  state.progress[lesson.id] = progress;
+  current.progress[lesson.id] = progress;
 });
 
 watch(activeLesson, (lesson) => {
-  if (!lesson) return;
-  state.activeLessonId = lesson.id;
-  state.activeSentenceId = currentSentence.value?.id ?? lesson.sentences[0].id;
-  const progress = state.progress[lesson.id] ?? { answers: {}, activeSentenceId: lesson.sentences[0].id, updatedAt: new Date().toISOString() };
+  if (!lesson) {
+    currentAnswer.value = '';
+    return;
+  }
+  if (!state.activeStudentId) return;
+  const current = learning.value;
+  current.activeLessonId = lesson.id;
+  const progress = current.progress[lesson.id] ?? { answers: {}, activeSentenceId: lesson.sentences[0].id, updatedAt: new Date().toISOString() };
   if (!lesson.sentences.some((sentence) => sentence.id === progress.activeSentenceId)) progress.activeSentenceId = lesson.sentences[0].id;
-  state.progress[lesson.id] = progress;
-  state.activeSentenceId = progress.activeSentenceId;
-  currentAnswer.value = progress.answers[state.activeSentenceId] ?? '';
+  current.progress[lesson.id] = progress;
+  current.activeSentenceId = progress.activeSentenceId;
+  currentAnswer.value = progress.answers[progress.activeSentenceId] ?? '';
 });
 
 watch(teacherAttemptId, (id) => {
   teacherDraft.value = state.attempts.find((attempt) => attempt.id === id)?.teacherFeedback ?? '';
+});
+
+watch(teacherStudentFilter, () => {
+  teacherAttemptId.value = filteredTeacherAttempts.value[0]?.id ?? '';
 });
 
 function notify(message: string) {
@@ -86,12 +108,50 @@ function notify(message: string) {
   toastTimer = window.setTimeout(() => { toast.value = ''; }, 2400);
 }
 
+function openProfileDialog(mode: 'setup' | 'add') {
+  profileName.value = '';
+  profileDialog.value = mode;
+}
+
+function confirmProfile() {
+  const name = profileName.value.trim();
+  if (!name) return;
+  const profile = createStudent(name);
+  profileDialog.value = null;
+  profileName.value = '';
+  applyStudentContext();
+  notify(`已建立 ${profile.name} 的学习档案`);
+}
+
+function onSwitchStudent(studentId: string) {
+  if (studentId === state.activeStudentId) return;
+  if (!switchStudent(studentId)) return;
+  applyStudentContext();
+  notify(`已切换到 ${studentName(studentId)}`);
+}
+
+// 切换档案后立即把页面现场换成当前学生的：自己的课节、句子与草稿，不带出上一位的内容。
+function applyStudentContext() {
+  resultAttemptId.value = '';
+  selectedResultSentence.value = 0;
+  const lesson = learning.value.activeLessonId ? lessonById(learning.value.activeLessonId) : undefined;
+  if (lesson) {
+    startLesson(lesson);
+  } else {
+    currentAnswer.value = '';
+    view.value = 'library';
+  }
+  persist();
+}
+
 function startLesson(lesson: Lesson) {
-  const progress = state.progress[lesson.id] ?? { answers: {}, activeSentenceId: lesson.sentences[0].id, updatedAt: new Date().toISOString() };
-  state.progress[lesson.id] = progress;
-  state.activeLessonId = lesson.id;
-  state.activeSentenceId = progress.activeSentenceId || lesson.sentences[0].id;
-  currentAnswer.value = progress.answers[state.activeSentenceId] ?? '';
+  if (!state.activeStudentId) return;
+  const current = learning.value;
+  const progress = current.progress[lesson.id] ?? { answers: {}, activeSentenceId: lesson.sentences[0].id, updatedAt: new Date().toISOString() };
+  current.progress[lesson.id] = progress;
+  current.activeLessonId = lesson.id;
+  current.activeSentenceId = progress.activeSentenceId || lesson.sentences[0].id;
+  currentAnswer.value = progress.answers[current.activeSentenceId] ?? '';
   view.value = 'practice';
   persist();
 }
@@ -100,8 +160,9 @@ function goToSentence(index: number) {
   const lesson = activeLesson.value;
   if (!lesson || !lesson.sentences[index]) return;
   const target = lesson.sentences[index];
-  state.activeSentenceId = target.id;
-  const progress = state.progress[lesson.id];
+  const current = learning.value;
+  current.activeSentenceId = target.id;
+  const progress = current.progress[lesson.id];
   if (progress) {
     progress.activeSentenceId = target.id;
     progress.updatedAt = new Date().toISOString();
@@ -113,8 +174,8 @@ function goToSentence(index: number) {
 function submitLesson() {
   const lesson = activeLesson.value;
   const course = activeCourse.value;
-  if (!lesson || !course) return;
-  const progress = state.progress[lesson.id];
+  if (!lesson || !course || !state.activeStudentId) return;
+  const progress = learning.value.progress[lesson.id];
   const answeredCount = lesson.sentences.filter((sentence) => (progress?.answers[sentence.id] ?? '').trim()).length;
   if (!answeredCount) {
     notify('请至少输入一句话再提交');
@@ -130,6 +191,7 @@ function submitLesson() {
   });
   const attempt: PracticeAttempt = {
     id: `attempt-${Date.now()}`,
+    studentId: state.activeStudentId,
     lessonId: lesson.id,
     lessonTitle: lesson.title,
     courseTitle: course.title,
@@ -187,7 +249,7 @@ function saveTeacherFeedback() {
   if (!attempt) return;
   attempt.teacherFeedback = teacherDraft.value.trim();
   persist();
-  notify('教师反馈已保存');
+  notify(`反馈已保存给 ${studentName(attempt.studentId)}`);
 }
 
 function toggleTheme() {
@@ -206,7 +268,7 @@ function downloadRecords() {
   anchor.download = `echo-step-records-${new Date().toISOString().slice(0, 10)}.json`;
   anchor.click();
   URL.revokeObjectURL(url);
-  notify('练习记录已导出');
+  notify('练习记录已按学生分组导出');
 }
 
 function formatDate(value: string): string {
@@ -254,11 +316,21 @@ onBeforeUnmount(() => {
           </div>
         </header>
 
+        <section class="profile-bar">
+          <div class="profile-meta">
+            <span class="profile-label">当前学生</span>
+            <select class="profile-select" :value="state.activeStudentId" aria-label="切换学生档案" @change="onSwitchStudent(($event.target as HTMLSelectElement).value)">
+              <option v-for="student in state.students" :key="student.id" :value="student.id">{{ student.name }}</option>
+            </select>
+          </div>
+          <button class="profile-add" @click="openProfileDialog('add')">＋ 新增档案</button>
+        </section>
+
         <section class="hero">
           <h2>今天也把声音变成文字</h2>
-          <p>下载课程后可离线作答，答案和当前位置会自动恢复。</p>
+          <p>{{ currentStudent?.name ?? '同学' }}，课程下载全机共用，你的进度和记录只属于自己的档案。</p>
           <div class="hero-stats">
-            <div class="hero-stat"><strong>{{ state.attempts.length }}</strong><span>练习记录</span></div>
+            <div class="hero-stat"><strong>{{ studentAttempts.length }}</strong><span>练习记录</span></div>
             <div class="hero-stat"><strong>{{ correctedWords }}</strong><span>已分类错误</span></div>
             <div class="hero-stat"><strong>{{ totalWords }}</strong><span>累计词数</span></div>
           </div>
@@ -291,15 +363,15 @@ onBeforeUnmount(() => {
           </div>
         </article>
 
-        <div class="section-head"><h3>最近练习</h3><span>{{ state.attempts.length }} 条记录</span></div>
-        <article v-if="state.attempts.length" class="panel">
-          <div v-for="attempt in state.attempts.slice(0, 4)" :key="attempt.id" class="history-card">
+        <div class="section-head"><h3>最近练习</h3><span>{{ studentAttempts.length }} 条记录</span></div>
+        <article v-if="studentAttempts.length" class="panel">
+          <div v-for="attempt in studentAttempts.slice(0, 4)" :key="attempt.id" class="history-card">
             <div class="history-top"><strong>{{ attempt.lessonTitle }}</strong><span class="history-score">{{ attempt.score }} 分</span></div>
             <p>{{ formatDate(attempt.submittedAt) }} · {{ attempt.teacherFeedback || '暂无教师反馈' }}</p>
           </div>
-          <var-button block type="primary" variant="outline" @click="downloadRecords">导出全部练习记录</var-button>
+          <var-button block type="primary" variant="outline" @click="downloadRecords">导出全部学生记录</var-button>
         </article>
-        <div v-else class="empty-state"><strong>还没有练习记录</strong>完成一次听写后，可在这里复核和导出。</div>
+        <div v-else class="empty-state"><strong>{{ currentStudent?.name ?? '当前学生' }}还没有练习记录</strong>完成一次听写后，可在这里复核和导出。</div>
       </div>
 
       <div v-else-if="view === 'practice' && activeLesson" class="page">
@@ -307,6 +379,7 @@ onBeforeUnmount(() => {
           <div class="practice-nav">
             <button class="back-button" aria-label="返回课程库" @click="view = 'library'">‹</button>
             <div><h2>{{ activeLesson.title }}</h2></div>
+            <span class="status-chip">{{ currentStudent?.name }}</span>
             <span class="status-chip">{{ online ? '在线' : '离线' }}</span>
           </div>
           <div class="progress-line">
@@ -322,7 +395,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <div class="dictation-label"><strong>输入听到的内容</strong><span>答案在本机自动保存</span></div>
+        <div class="dictation-label"><strong>输入听到的内容</strong><span>答案保存在 {{ currentStudent?.name }} 的档案里</span></div>
         <textarea v-model="currentAnswer" class="answer-box" :aria-label="`第 ${currentIndex + 1} 句听写答案`" placeholder="Type what you hear..." @keydown.ctrl.enter="submitLesson" @keydown.meta.enter="submitLesson"></textarea>
         <div class="practice-actions">
           <var-button block type="default" variant="outline" @click="replay(currentSentence?.text ?? '')">再听一次</var-button>
@@ -349,7 +422,7 @@ onBeforeUnmount(() => {
         <section class="panel result-score">
           <div class="score-ring" :style="{ '--score': `${resultAttempt.score}%` }"><strong>{{ resultAttempt.score }}</strong></div>
           <h2>{{ resultAttempt.score >= 90 ? '几乎完美' : resultAttempt.score >= 70 ? '继续打磨细节' : '再听一遍会更好' }}</h2>
-          <p>{{ resultAttempt.lessonTitle }} · 点击红色词可单独重听，并记录错误原因。</p>
+          <p>{{ studentName(resultAttempt.studentId) }} · {{ resultAttempt.lessonTitle }} · 点击红色词可单独重听，并记录错误原因。</p>
         </section>
 
         <div class="sentence-picker">
@@ -398,23 +471,43 @@ onBeforeUnmount(() => {
       <div v-else-if="view === 'teacher'" class="page">
         <header class="topbar">
           <button class="back-button" aria-label="返回课程库" @click="view = 'library'">‹</button>
-          <div class="brand"><div class="brand-mark">T</div><div><h1>教师复核</h1><p>查看作答并写入反馈</p></div></div>
+          <div class="brand"><div class="brand-mark">T</div><div><h1>教师复核</h1><p>按学生查看作答并写入反馈</p></div></div>
         </header>
 
         <div v-if="state.attempts.length" class="panel">
-          <div class="dictation-label"><strong>选择一次作答</strong><span>{{ state.attempts.length }} 条</span></div>
-          <var-select v-model="teacherAttemptId" placeholder="选择作答">
-            <var-option v-for="attempt in state.attempts" :key="attempt.id" :label="`${attempt.lessonTitle} · ${attempt.score} 分 · ${formatDate(attempt.submittedAt)}`" :value="attempt.id" />
+          <div class="dictation-label"><strong>按学生筛选</strong><span>{{ filteredTeacherAttempts.length }} / {{ state.attempts.length }} 条作答</span></div>
+          <var-select v-model="teacherStudentFilter" placeholder="全部学生">
+            <var-option label="全部学生" value="all" />
+            <var-option v-for="student in state.students" :key="student.id" :label="student.name" :value="student.id" />
           </var-select>
-          <template v-if="teacherAttempt">
-            <div class="feedback-card"><strong>{{ teacherAttempt.courseTitle }}</strong><p>{{ teacherAttempt.lessonTitle }} · 总分 {{ teacherAttempt.score }}，完成 {{ teacherAttempt.sentenceAttempts.length }} 句。</p></div>
-            <div class="teacher-editor">
-              <textarea v-model="teacherDraft" placeholder="给学生一条具体、可执行的反馈..." aria-label="教师反馈"></textarea>
-              <var-button block type="primary" style="margin-top: 10px" @click="saveTeacherFeedback">保存反馈</var-button>
-            </div>
+          <template v-if="filteredTeacherAttempts.length">
+            <div class="dictation-label"><strong>选择一次作答</strong><span>反馈写回被选中的学生</span></div>
+            <var-select v-model="teacherAttemptId" placeholder="选择作答">
+              <var-option v-for="attempt in filteredTeacherAttempts" :key="attempt.id" :label="`${studentName(attempt.studentId)} · ${attempt.lessonTitle} · ${attempt.score} 分 · ${formatDate(attempt.submittedAt)}`" :value="attempt.id" />
+            </var-select>
+            <template v-if="teacherAttempt">
+              <div class="feedback-card"><strong>{{ studentName(teacherAttempt.studentId) }} · {{ teacherAttempt.courseTitle }}</strong><p>{{ teacherAttempt.lessonTitle }} · 总分 {{ teacherAttempt.score }}，完成 {{ teacherAttempt.sentenceAttempts.length }} 句。</p></div>
+              <div class="teacher-editor">
+                <textarea v-model="teacherDraft" :placeholder="`给 ${studentName(teacherAttempt.studentId)} 一条具体、可执行的反馈...`" aria-label="教师反馈"></textarea>
+                <var-button block type="primary" style="margin-top: 10px" @click="saveTeacherFeedback">保存反馈</var-button>
+              </div>
+            </template>
           </template>
+          <div v-else class="empty-state"><strong>该学生暂无作答</strong>切换其他学生，或等学习端提交后再复核。</div>
         </div>
         <div v-else class="empty-state"><strong>暂无学生作答</strong>学习端提交听写后，这里会出现练习记录。</div>
+      </div>
+
+      <div v-if="profileDialog" class="profile-dialog-mask">
+        <div class="profile-dialog" role="dialog" aria-modal="true">
+          <h2>{{ profileDialog === 'setup' ? '创建学习档案' : '新增学生档案' }}</h2>
+          <p>{{ profileDialog === 'setup' ? '这台平板由多位同学轮流使用，先填写姓名建立你的档案，练习进度和记录会各自独立。' : '新档案将独立保存当前课节、每句草稿、练习记录和错误分类。' }}</p>
+          <input v-model="profileName" maxlength="20" placeholder="输入姓名" aria-label="学生姓名" @keydown.enter="confirmProfile" />
+          <div class="profile-dialog-actions">
+            <var-button v-if="profileDialog === 'add'" block type="default" variant="outline" @click="profileDialog = null">取消</var-button>
+            <var-button block type="primary" :disabled="!profileName.trim()" @click="confirmProfile">{{ profileDialog === 'setup' ? '开始学习' : '创建并切换' }}</var-button>
+          </div>
+        </div>
       </div>
 
       <div v-if="toast" style="position: fixed; z-index: 30; left: 50%; bottom: 28px; transform: translateX(-50%); padding: 11px 16px; border-radius: 12px; background: #17233d; color: white; font-size: .78rem; box-shadow: 0 10px 30px rgb(0 0 0 / .2)">{{ toast }}</div>

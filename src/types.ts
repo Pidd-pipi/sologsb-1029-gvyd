@@ -48,6 +48,7 @@ export interface SentenceAttempt {
 
 export interface PracticeAttempt {
   id: string;
+  studentId: string;
   lessonId: string;
   lessonTitle: string;
   courseTitle: string;
@@ -63,13 +64,25 @@ export interface LessonProgress {
   updatedAt: string;
 }
 
-export interface PersistedState {
-  schemaVersion: 1;
-  courses: Course[];
-  attempts: PracticeAttempt[];
+export interface StudentProfile {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface StudentLearningState {
   progress: Record<string, LessonProgress>;
   activeLessonId: string;
   activeSentenceId: string;
+}
+
+export interface PersistedState {
+  schemaVersion: 2;
+  courses: Course[];
+  students: StudentProfile[];
+  activeStudentId: string;
+  attempts: PracticeAttempt[];
+  studentState: Record<string, StudentLearningState>;
   theme: ThemeMode;
   fontScale: number;
   role: 'learner' | 'teacher';
